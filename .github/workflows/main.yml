@@ -1,0 +1,43 @@
+name: Daily A-Share Data Fetch
+
+on:
+  schedule:
+    # 每个交易日的北京时间 23:30 执行（UTC 时间 15:30）
+    # 可根据实际数据更新时间调整，例如改为 0:30（UTC 16:30）
+    - cron: '30 15 * * 1-5'
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. 设置 Python 环境
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3. 安装依赖
+      - name: Install dependencies
+        run: |
+          pip install requests beautifulsoup4
+
+      # 4. 运行数据抓取脚本
+      - name: Run fetch script
+        run: python fetch_data.py
+
+      # 5. 提交并推送更新后的 CSV 文件
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add a_share_daily.csv
+          # 如果有变更则提交，否则跳过
+          git diff --quiet && git diff --staged --quiet || git commit -m "auto update A-share daily data $(date '+%Y-%m-%d')"
+          git push
