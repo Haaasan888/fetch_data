@@ -7,116 +7,132 @@ import csv
 import os
 import time
 import random
-from datetime import datetime
+import re
 from typing import List, Dict, Set
 
-# ===================== 配置区域 =====================
-START_DATE = "20260401"  # 开始日期 YYYYMMDD
-END_DATE = "20260420"    # 结束日期 YYYYMMDD
 BASE_URL = "https://gg.cfi.cn/data_ndkA0A1934A1935A36.html"
 OUTPUT_CSV = "a_share_daily.csv"
-REQUEST_DELAY = (1, 3)   # 随机延迟范围（秒）
+REQUEST_DELAY = (0.5, 1.5)
+MAX_RETRIES = 3
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
 ]
-# ===================================================
+
+def get_latest_trade_date() -> str:
+    """从页面标题中提取最新交易日，返回 YYYY-MM-DD 格式"""
+    headers = {'User-Agent': random.choice(USER_AGENTS)}
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = requests.get(BASE_URL, headers=headers, timeout=15)
+            resp.encoding = 'utf-8'
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            title_tag = soup.find('div', class_='ptitle')
+            if not title_tag:
+                raise Exception("未找到标题")
+            title_text = title_tag.get_text(strip=True)
+            match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', title_text)
+            if not match:
+                raise Exception(f"无法提取日期: {title_text}")
+            year, month, day = match.groups()
+            return f"{year}-{int(month):02d}-{int(day):02d}"
+        except Exception as e:
+            print(f"  获取交易日失败，重试 {attempt+1}/{MAX_RETRIES}: {e}")
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(2)
+            else:
+                raise
+
+def get_total_pages(estimated_total_stocks=5700, page_size=100) -> int:
+    """
+    估算总页数
+    estimated_total_stocks: 预估的 A 股总数（可微调）
+    page_size: 每页显示的股票数（固定为 100）
+    """
+    return (estimated_total_stocks + page_size - 1) // page_size
+
+def fetch_page_data(page: int, latest_date: str) -> List[Dict]:
+    """
+    使用正确的分页参数 pgnum 抓取指定页面数据
+    返回记录列表
+    """
+    url = f"{BASE_URL}?pgnum={page}"
+    headers = {'User-Agent': random.choice(USER_AGENTS)}
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            resp.encoding = 'utf-8'
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            table = soup.find('table', id='tabData')
+            if not table:
+                return []
+            rows = table.find_all('tr')[1:]
+            records = []
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) < 7:
+                    continue
+                # 提取数据
+                code_tag = cols[0].find('a')
+                name_tag = cols[1].find('a')
+                code = code_tag.text.strip() if code_tag else cols[0].text.strip()
+                name = name_tag.text.strip() if name_tag else cols[1].text.strip()
+                change = cols[2].text.strip()
+                price_start = cols[3].text.strip()
+                price_end = cols[4].text.strip()
+                change_amount = cols[5].text.strip()
+                industry_tag = cols[6].find('a')
+                industry = industry_tag.text.strip() if industry_tag else cols[6].text.strip()
+                records.append({
+                    '日期': latest_date,
+                    '股票代码': code,
+                    '股票名称': name,
+                    '日涨幅%': change,
+                    '期初收盘价': price_start,
+                    '期末收盘价': price_end,
+                    '日涨跌': change_amount,
+                    '所属行业': industry,
+                })
+            return records
+        except Exception as e:
+            print(f"  第 {page} 页请求失败，重试 {attempt+1}/{MAX_RETRIES}: {e}")
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(2)
+            else:
+                return []
+    return []
+
+def fetch_all_pages(latest_date: str) -> List[Dict]:
+    """估算总页数并抓取所有分页数据"""
+    total_pages = get_total_pages()
+    print(f"根据 A 股总数估算总页数为: {total_pages}")
+    all_records = []
+    for page in range(1, total_pages + 1):
+        print(f"  正在抓取第 {page}/{total_pages} 页...")
+        records = fetch_page_data(page, latest_date)
+        if records:
+            all_records.extend(records)
+            print(f"    第 {page} 页获取 {len(records)} 条，累计 {len(all_records)} 条")
+        else:
+            print(f"    第 {page} 页无数据，可能已结束")
+            # 连续两页无数据就停止抓取
+            if page > 1 and len(all_records) == 0:
+                break
+        time.sleep(random.uniform(*REQUEST_DELAY))
+    return all_records
 
 def get_existing_dates(filename: str) -> Set[str]:
-    """从现有CSV中读取所有日期（格式 YYYY-MM-DD）"""
+    """读取CSV中已存在的日期"""
     if not os.path.exists(filename):
         return set()
     with open(filename, 'r', encoding='utf-8-sig') as f:
         reader = csv.DictReader(f)
-        dates = {row.get('日期', '') for row in reader if row.get('日期')}
-    return dates
-
-def fetch_page_data(td: str, page: int) -> List[Dict]:
-    """抓取单个日期的单个页面数据，返回解析后的记录列表"""
-    url = f"{BASE_URL}?curpage={page}&td={td}"
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Referer': BASE_URL,
-    }
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        resp.raise_for_status()
-        resp.encoding = 'utf-8'
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        table = soup.find('table', id='tabData')
-        if not table:
-            return []
-        records = []
-        for row in table.find_all('tr')[1:]:  # 跳过表头
-            cols = row.find_all('td')
-            if len(cols) < 6:
-                continue
-            code_tag = cols[0].find('a')
-            name_tag = cols[1].find('a')
-            code = code_tag.text.strip() if code_tag else ''
-            name = name_tag.text.strip() if name_tag else ''
-            chg_tag = cols[2]
-            change = chg_tag.text.strip() if chg_tag else ''
-            # 提取期初收盘价、期末收盘价、涨跌额
-            price_start = cols[3].text.strip()
-            price_end = cols[4].text.strip()
-            change_amount = cols[5].text.strip()
-            # 所属行业
-            industry_tag = cols[6].find('a')
-            industry = industry_tag.text.strip() if industry_tag else cols[6].text.strip()
-            # 格式化日期（YYYYMMDD -> YYYY-MM-DD）
-            formatted_date = f"{td[:4]}-{td[4:6]}-{td[6:8]}"
-            records.append({
-                '日期': formatted_date,
-                '股票代码': code,
-                '股票名称': name,
-                '日涨幅%': change,
-                '期初收盘价': price_start,
-                '期末收盘价': price_end,
-                '日涨跌': change_amount,
-                '所属行业': industry,
-            })
-        return records
-    except Exception as e:
-        print(f"  请求异常: {e}，日期 {td}，第 {page} 页")
-        return []
-
-def fetch_one_day(td: str) -> List[Dict]:
-    """抓取指定日期的所有分页数据"""
-    all_records = []
-    page = 1
-    while True:
-        print(f"    正在抓取第 {page} 页...")
-        records = fetch_page_data(td, page)
-        if not records:
-            break
-        all_records.extend(records)
-        print(f"      第 {page} 页获取 {len(records)} 条，累计 {len(all_records)} 条")
-        # 检查是否有下一页（通过检查分页区域是否存在当前页码+1的链接）
-        url = f"{BASE_URL}?curpage={page+1}&td={td}"
-        try:
-            resp = requests.get(url, headers={'User-Agent': random.choice(USER_AGENTS)}, timeout=15)
-            if resp.status_code != 200:
-                break
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            # 如果下一页的表格为空或没有新数据，则终止
-            if not soup.find('table', id='tabData').find_all('tr')[1:]:
-                break
-        except:
-            break
-        page += 1
-        time.sleep(random.uniform(*REQUEST_DELAY))
-    return all_records
-
-def date_range(start_date: str, end_date: str) -> List[str]:
-    """生成日期字符串列表 (YYYYMMDD)"""
-    start = datetime.strptime(start_date, "%Y%m%d")
-    end = datetime.strptime(end_date, "%Y%m%d")
-    return [(start + timedelta(days=i)).strftime("%Y%m%d") for i in range((end - start).days + 1)]
+        return {row.get('日期', '') for row in reader if row.get('日期')}
 
 def save_to_csv(rows: List[Dict], filename: str, append: bool = True):
     if not rows:
-        print("没有新数据需要保存。")
+        print("没有新数据需要保存")
         return
     mode = "a" if append else "w"
     fieldnames = ['日期', '股票代码', '股票名称', '日涨幅%', '期初收盘价', '期末收盘价', '日涨跌', '所属行业']
@@ -126,10 +142,10 @@ def save_to_csv(rows: List[Dict], filename: str, append: bool = True):
         if write_header:
             writer.writeheader()
         writer.writerows(rows)
-    print(f"已保存 {len(rows)} 条记录到 {filename}（模式：{'追加' if append else '覆盖'}）")
+    print(f"已保存 {len(rows)} 条记录到 {filename}")
 
 def sort_and_dedupe_csv(filename: str):
-    """按日期升序排序并基于（日期+股票代码）去重"""
+    """按日期升序排序并去重"""
     if not os.path.exists(filename):
         return
     with open(filename, 'r', encoding='utf-8-sig') as f:
@@ -152,34 +168,24 @@ def sort_and_dedupe_csv(filename: str):
     print(f"排序+去重完成：原 {len(rows)} 条 → {len(unique_rows)} 条")
 
 def main():
-    print(f"开始处理 {START_DATE} 至 {END_DATE} 的A股日涨跌数据...")
+    print("开始获取最新交易日数据...")
+    latest_date = get_latest_trade_date()
+    print(f"最新交易日: {latest_date}")
+
     existing_dates = get_existing_dates(OUTPUT_CSV)
-    if existing_dates:
-        print(f"CSV中已存在 {len(existing_dates)} 个日期的数据，将跳过这些日期")
-    all_dates = date_range(START_DATE, END_DATE)
-    missing_dates = [d for d in all_dates if f"{d[:4]}-{d[4:6]}-{d[6:8]}" not in existing_dates]
-    print(f"总日期数: {len(all_dates)}，需要抓取的日期: {len(missing_dates)}")
-    if not missing_dates:
-        print("所有日期均已存在，无需抓取。")
-        sort_and_dedupe_csv(OUTPUT_CSV)
+    if latest_date in existing_dates:
+        print(f"日期 {latest_date} 的数据已存在，无需抓取")
         return
-    all_new_rows = []
-    for i, d in enumerate(missing_dates, 1):
-        print(f"\n[{i}/{len(missing_dates)}] 正在处理日期 {d}")
-        day_records = fetch_one_day(d)
-        if day_records:
-            all_new_rows.extend(day_records)
-            print(f"  日期 {d} 共获取 {len(day_records)} 条记录")
-        else:
-            print(f"  日期 {d} 无数据")
-        time.sleep(random.uniform(*REQUEST_DELAY))
-    print(f"\n本次新获取 {len(all_new_rows)} 条记录")
-    if all_new_rows:
-        save_to_csv(all_new_rows, OUTPUT_CSV, append=True)
+
+    print(f"开始抓取 {latest_date} 的数据...")
+    records = fetch_all_pages(latest_date)
+    print(f"共抓取 {len(records)} 条记录")
+
+    if records:
+        save_to_csv(records, OUTPUT_CSV, append=True)
         sort_and_dedupe_csv(OUTPUT_CSV)
     else:
-        print("未获取到任何新数据。")
+        print("未获取到任何数据")
 
 if __name__ == "__main__":
-    from datetime import timedelta
     main()
