@@ -1,0 +1,24 @@
+name: Daily A-Share Update
+
+on:
+  schedule:
+    - cron: '30 15 * * 1-5'   # 北京时间 23:30，周一到周五
+  workflow_dispatch:           # 允许手动触发
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests beautifulsoup4
+      - run: python fetch_data.py
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add a_share_daily.csv
+          git diff --quiet && git diff --staged --quiet || git commit -m "auto update: $(date '+%Y-%m-%d')"
+          git push
