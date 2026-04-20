@@ -1,37 +1,38 @@
-name: 每日行业数据采集
+name: Daily Data Bot
 
 on:
   schedule:
-    # 这里的 cron 表达式代表定时时间。
-    # 0 9 * * 1-5 代表 UTC 时间 9:00，即北京时间 17:00（下午5点）
-    # 这里的 1-5 表示周一到周五运行
-    - cron: '0 9 * * 1-5'
-  workflow_dispatch: # 这行代码允许你手动在网页上点击“运行”来测试
+    - cron: '30 7 * * 1-5' # 北京时间 15:30
+  workflow_dispatch:
 
 jobs:
-  build:
+  run-bot:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 检出代码
+      - name: Checkout
         uses: actions/checkout@v3
 
-      - name: 2. 安装 Python 环境
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.10'
+          cache: 'pip'
 
-      - name: 3. 安装必要的库
+      - name: Install Dependencies
         run: |
-          pip install -r requirements.txt
+          pip install pandas requests beautifulsoup4 openpyxl lxml
 
-      - name: 4. 执行爬虫脚本
-        run: python 你的脚本名.py  # 注意：这里请改成你实际的 Python 文件名
+      - name: Run Script
+        run: python fetch_data.py
 
-      - name: 5. 将生成的 Excel 提交到仓库
+      - name: Commit and Push
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add 行业涨跌停统计_每日追加.xlsx
-          # 只有当文件有变化时才提交，防止报错
-          git commit -m "自动更新: $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
-          git push
+          if [ -f "行业涨跌停统计_每日追加.xlsx" ]; then
+            git add "行业涨跌停统计_每日追加.xlsx"
+            git commit -m "Auto Update: $(date +'%Y-%m-%d')" || echo "No changes to commit"
+            git push
+          else
+            echo "No file to upload"
+          fi
