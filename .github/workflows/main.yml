@@ -2,26 +2,35 @@ name: Daily A-Share Data Fetch
 
 on:
   schedule:
-    - cron: '30 15 * * 1-5'
+    - cron: '30 7 * * 1-5'
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install requests beautifulsoup4
-      - run: python fetch_data.py
+
+      - name: Install dependencies
+        run: |
+          pip install requests beautifulsoup4 pandas openpyxl
+
+      - name: Run crawler
+        run: python fetch_data.py
+
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add a_share_daily.csv
-          git diff --quiet && git diff --staged --quiet || git commit -m "auto update: $(date '+%Y-%m-%d')"
+          git add "行业涨跌停统计_每日追加.xlsx"
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto update: $(date '+%Y-%m-%d')"
           git push
