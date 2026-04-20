@@ -1,191 +1,241 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
+import re
+import time
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import csv
-import os
-import time
-import random
-import re
-from typing import List, Dict, Set
+from datetime import datetime
 
-BASE_URL = "https://gg.cfi.cn/data_ndkA0A1934A1935A36.html"
-OUTPUT_CSV = "a_share_daily.csv"
-REQUEST_DELAY = (0.5, 1.5)
-MAX_RETRIES = 3
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
-]
+# ===================== 配置项 =====================
+URL_LIMIT        = "https://gg.cfi.cn/data_ndkA0A1934A1935A60.html"
+URL_INDUSTRY     = "https://gg.cfi.cn/cfi_datacontent_server.aspx?ndk=A0A1934A1935A39&client=pc"
+URL_PROFIT       = "https://gg.cfi.cn/cfi_datacontent_server.aspx?ndk=A0A1934A1935A59&client=pc"
+SAVE_FILE        = "行业涨跌停统计_每日追加.xlsx"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+}
+# ===================================================
 
-def get_latest_trade_date() -> str:
-    """从页面标题中提取最新交易日，返回 YYYY-MM-DD 格式"""
-    headers = {'User-Agent': random.choice(USER_AGENTS)}
-    for attempt in range(MAX_RETRIES):
-        try:
-            resp = requests.get(BASE_URL, headers=headers, timeout=15)
-            resp.encoding = 'utf-8'
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            title_tag = soup.find('div', class_='ptitle')
-            if not title_tag:
-                raise Exception("未找到标题")
-            title_text = title_tag.get_text(strip=True)
-            match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', title_text)
-            if not match:
-                raise Exception(f"无法提取日期: {title_text}")
-            year, month, day = match.groups()
-            return f"{year}-{int(month):02d}-{int(day):02d}"
-        except Exception as e:
-            print(f"  获取交易日失败，重试 {attempt+1}/{MAX_RETRIES}: {e}")
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(2)
-            else:
-                raise
+def get_today_date():
+    return datetime.now().strftime("%Y-%m-%d")
 
-def get_total_pages(estimated_total_stocks=5700, page_size=100) -> int:
-    """
-    估算总页数
-    estimated_total_stocks: 预估的 A 股总数（可微调）
-    page_size: 每页显示的股票数（固定为 100）
-    """
-    return (estimated_total_stocks + page_size - 1) // page_size
+# ===================== 爬取行业涨跌停数据 =====================
+def crawl_limit_data():
+    print("正在爬取行业涨跌停数据...")
+    resp = requests.get(URL_LIMIT, headers=HEADERS, timeout=15)
+    resp.encoding = "utf-8"
+    soup = BeautifulSoup(resp.text, "html.parser")
+    all_data = []
+    current_industry = "未知行业"
+    industry_pattern = re.compile(r"^([^-]+)-([^（]+)")
 
-def fetch_page_data(page: int, latest_date: str) -> List[Dict]:
-    """
-    使用正确的分页参数 pgnum 抓取指定页面数据
-    返回记录列表
-    """
-    url = f"{BASE_URL}?pgnum={page}"
-    headers = {'User-Agent': random.choice(USER_AGENTS)}
-    for attempt in range(MAX_RETRIES):
-        try:
-            resp = requests.get(url, headers=headers, timeout=15)
-            resp.raise_for_status()
-            resp.encoding = 'utf-8'
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            table = soup.find('table', id='tabData')
-            if not table:
-                return []
-            rows = table.find_all('tr')[1:]
-            records = []
-            for row in rows:
-                cols = row.find_all('td')
-                if len(cols) < 7:
-                    continue
-                # 提取数据
-                code_tag = cols[0].find('a')
-                name_tag = cols[1].find('a')
-                code = code_tag.text.strip() if code_tag else cols[0].text.strip()
-                name = name_tag.text.strip() if name_tag else cols[1].text.strip()
-                change = cols[2].text.strip()
-                price_start = cols[3].text.strip()
-                price_end = cols[4].text.strip()
-                change_amount = cols[5].text.strip()
-                industry_tag = cols[6].find('a')
-                industry = industry_tag.text.strip() if industry_tag else cols[6].text.strip()
-                records.append({
-                    '日期': latest_date,
-                    '股票代码': code,
-                    '股票名称': name,
-                    '日涨幅%': change,
-                    '期初收盘价': price_start,
-                    '期末收盘价': price_end,
-                    '日涨跌': change_amount,
-                    '所属行业': industry,
+    for table in soup.find_all("table"):
+        for tr in table.find_all("tr"):
+            txt = tr.get_text(strip=True)
+            if "（共" in txt and "家数" in txt:
+                match = industry_pattern.match(txt)
+                if match:
+                    current_industry = match.group(1).strip()
+                continue
+            tds = tr.find_all("td")
+            if len(tds) >= 15:
+                row = [td.get_text(strip=True) for td in tds]
+                all_data.append({
+                    "日期": get_today_date(),
+                    "行业": current_industry,
+                    "代码": row[0],
+                    "名称": row[1],
+                    "最新": row[2],
+                    "涨跌": row[3],
+                    "涨跌幅": row[4],
+                    "前收": row[5],
+                    "开盘": row[6],
+                    "最高": row[7],
+                    "最低": row[8],
+                    "成交量": row[9],
+                    "成交额": row[10],
+                    "市盈率": row[11],
+                    "换手率": row[12],
+                    "总股本": row[13],
+                    "流通股本": row[14]
                 })
-            return records
-        except Exception as e:
-            print(f"  第 {page} 页请求失败，重试 {attempt+1}/{MAX_RETRIES}: {e}")
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(2)
-            else:
-                return []
-    return []
+    df = pd.DataFrame(all_data)
+    print(f"✅ 涨跌停数据抓取完成：{len(df)} 条")
+    return df
 
-def fetch_all_pages(latest_date: str) -> List[Dict]:
-    """估算总页数并抓取所有分页数据"""
-    total_pages = get_total_pages()
-    print(f"根据 A 股总数估算总页数为: {total_pages}")
-    all_records = []
-    for page in range(1, total_pages + 1):
-        print(f"  正在抓取第 {page}/{total_pages} 页...")
-        records = fetch_page_data(page, latest_date)
-        if records:
-            all_records.extend(records)
-            print(f"    第 {page} 页获取 {len(records)} 条，累计 {len(all_records)} 条")
-        else:
-            print(f"    第 {page} 页无数据，可能已结束")
-            # 连续两页无数据就停止抓取
-            if page > 1 and len(all_records) == 0:
-                break
-        time.sleep(random.uniform(*REQUEST_DELAY))
-    return all_records
+# ===================== 修复：行业涨跌排行（去掉标题脏行）=====================
+def crawl_industry_rank():
+    print("正在爬取行业涨跌排行...")
+    today = get_today_date()
+    try:
+        resp = requests.get(URL_INDUSTRY, headers=HEADERS, timeout=10)
+        resp.encoding = "utf-8"
+        soup = BeautifulSoup(resp.text, "html.parser")
+        rows = soup.find("table").find_all("tr")
 
-def get_existing_dates(filename: str) -> Set[str]:
-    """读取CSV中已存在的日期"""
-    if not os.path.exists(filename):
-        return set()
-    with open(filename, 'r', encoding='utf-8-sig') as f:
-        reader = csv.DictReader(f)
-        return {row.get('日期', '') for row in reader if row.get('日期')}
+        data = []
+        for tr in rows:
+            tds = tr.find_all("td")
+            if len(tds) < 3:
+                continue
 
-def save_to_csv(rows: List[Dict], filename: str, append: bool = True):
-    if not rows:
-        print("没有新数据需要保存")
-        return
-    mode = "a" if append else "w"
-    fieldnames = ['日期', '股票代码', '股票名称', '日涨幅%', '期初收盘价', '期末收盘价', '日涨跌', '所属行业']
-    write_header = not os.path.exists(filename) or not append
-    with open(filename, mode, newline='', encoding='utf-8-sig') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if write_header:
-            writer.writeheader()
-        writer.writerows(rows)
-    print(f"已保存 {len(rows)} 条记录到 {filename}")
+            txt = tds[0].get_text(strip=True)
+            # 过滤掉标题行、脏数据
+            if "涨跌%" in txt or "行业" in txt or len(txt) > 50:
+                continue
 
-def sort_and_dedupe_csv(filename: str):
-    """按日期升序排序并去重"""
-    if not os.path.exists(filename):
-        return
-    with open(filename, 'r', encoding='utf-8-sig') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-    if not rows:
-        return
-    seen = set()
-    unique_rows = []
-    for row in rows:
-        key = (row.get('日期', ''), row.get('股票代码', ''))
-        if key not in seen:
-            seen.add(key)
-            unique_rows.append(row)
-    unique_rows.sort(key=lambda x: x.get('日期', ''))
-    with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(unique_rows)
-    print(f"排序+去重完成：原 {len(rows)} 条 → {len(unique_rows)} 条")
+            data.append([
+                today,
+                tds[0].get_text(strip=True),
+                tds[1].get_text(strip=True),
+                tds[2].get_text(strip=True)
+            ])
 
-def main():
-    print("开始获取最新交易日数据...")
-    latest_date = get_latest_trade_date()
-    print(f"最新交易日: {latest_date}")
+        df = pd.DataFrame(data, columns=["统计日期", "行业", "涨跌幅", "家数"])
+        print("✅ 行业涨跌排行抓取完成")
+        return df
+    except Exception as e:
+        print(f"❌ 行业涨跌排行失败：{e}")
+        return pd.DataFrame(columns=["统计日期","行业","涨跌幅","家数"])
 
-    existing_dates = get_existing_dates(OUTPUT_CSV)
-    if latest_date in existing_dates:
-        print(f"日期 {latest_date} 的数据已存在，无需抓取")
-        return
+# ===================== 爬取A股股东盈亏 =====================
+def crawl_profit_data():
+    print("正在爬取A股股东盈亏数据...")
+    today = get_today_date()
+    try:
+        resp = requests.get(URL_PROFIT, headers=HEADERS, timeout=10)
+        resp.encoding = "utf-8"
+        soup = BeautifulSoup(resp.text, "html.parser")
+        rows = soup.find("table").find_all("tr")[1:]
+        data = []
+        for tr in rows:
+            tds = tr.find_all("td")
+            if len(tds) >= 4:
+                data.append([
+                    today,
+                    tds[0].get_text(strip=True),
+                    tds[1].get_text(strip=True),
+                    tds[2].get_text(strip=True),
+                    tds[3].get_text(strip=True)
+                ])
+        df = pd.DataFrame(data, columns=["统计日期","原始日期","类型","股东数","占比"])
+        print("✅ 股东盈亏数据抓取完成")
+        return df
+    except Exception as e:
+        print(f"❌ 股东盈亏抓取失败：{e}")
+        return pd.DataFrame(columns=["统计日期","原始日期","类型","股东数","占比"])
 
-    print(f"开始抓取 {latest_date} 的数据...")
-    records = fetch_all_pages(latest_date)
-    print(f"共抓取 {len(records)} 条记录")
+# ===================== 去重 =====================
+def deduplicate(df_new):
+    today = get_today_date()
+    try:
+        df_old = pd.read_excel(SAVE_FILE, sheet_name=0, dtype={"代码": str})
+        if today in df_old["日期"].values:
+            print(f"✅ 今日{today}数据已存在，跳过重复录入")
+            return pd.DataFrame()
+    except:
+        pass
+    return df_new
 
-    if records:
-        save_to_csv(records, OUTPUT_CSV, append=True)
-        sort_and_dedupe_csv(OUTPUT_CSV)
-    else:
-        print("未获取到任何数据")
+# ===================== 每日汇总 + 全市场总计 =====================
+def generate_daily_summary(df_today):
+    today = get_today_date()
+    df = df_today.copy()
+    df["涨跌幅_数值"] = pd.to_numeric(df["涨跌幅"].str.replace("%", ""), errors="coerce")
+    limit_up   = df[df["涨跌幅_数值"] >= 9.8].copy()
+    limit_down = df[df["涨跌幅_数值"] <= -9.8].copy()
+    summary = []
+    for ind in df["行业"].unique():
+        up   = len(limit_up[limit_up["行业"] == ind])
+        down = len(limit_down[limit_down["行业"] == ind])
+        summary.append({"日期":today,"行业":ind,"涨停数":up,"跌停数":down,"合计涨跌停":up+down})
+    # 全市场总计
+    summary.append({
+        "日期":today,"行业":"全市场总计",
+        "涨停数":len(limit_up),"跌停数":len(limit_down),"合计涨跌停":len(limit_up)+len(limit_down)
+    })
+    df_summary = pd.DataFrame(summary)
 
+    # 环比
+    try:
+        hist = pd.read_excel(SAVE_FILE, sheet_name="每日汇总统计", dtype=str)
+        hist["涨停数"] = pd.to_numeric(hist["涨停数"], errors="coerce")
+        hist["跌停数"] = pd.to_numeric(hist["跌停数"], errors="coerce")
+        last_date = hist["日期"].max()
+        last = hist[hist["日期"] == last_date]
+        for i, row in df_summary.iterrows():
+            match_last = last[last["行业"] == row["行业"]]
+            l_up = match_last["涨停数"].iloc[0] if not match_last.empty else 0
+            l_down = match_last["跌停数"].iloc[0] if not match_last.empty else 0
+
+            df_summary.at[i, "涨停环比"] = f"{row['涨停数']-l_up:+}" if l_up == 0 else f"{row['涨停数']-l_up:+} ({(row['涨停数']-l_up)/l_up:.1%})"
+            df_summary.at[i, "跌停环比"] = f"{row['跌停数']-l_down:+}" if l_down == 0 else f"{row['跌停数']-l_down:+} ({(row['跌停数']-l_down)/l_down:.1%})"
+    except:
+        df_summary["涨停环比"] = 0
+        df_summary["跌停环比"] = 0
+    return df_summary
+
+# ===================== 连板 ≥2 板才记录 =====================
+def update_limit_streak(df_today):
+    today = get_today_date()
+    df = df_today.copy()
+    df["涨跌幅_数值"] = pd.to_numeric(df["涨跌幅"].str.replace("%", ""), errors="coerce")
+    today_up = df[df["涨跌幅_数值"] >= 9.8].copy()
+    try:
+        streak = pd.read_excel(SAVE_FILE, sheet_name="连板记录", dtype={"代码": str})
+    except:
+        streak = pd.DataFrame(columns=["日期","代码","名称","行业","连板天数"])
+    new_rows = []
+    for _, s in today_up.iterrows():
+        prev_days = streak[streak["代码"]==s["代码"]]["连板天数"].max()
+        days = int(prev_days)+1 if pd.notna(prev_days) else 1
+        new_rows.append({
+            "日期":today,"代码":s["代码"],"名称":s["名称"],
+            "行业":s["行业"],"连板天数":days
+        })
+    streak = pd.concat([streak, pd.DataFrame(new_rows)], ignore_index=True)
+    streak = streak.drop_duplicates(subset=["日期","代码"], keep="last")
+    streak = streak[streak["连板天数"] >= 2].copy()
+    return streak
+
+# ===================== 保存 =====================
+def save_all(df_all, df_summary, df_streak, df_profit, df_industry):
+    with pd.ExcelWriter(SAVE_FILE, engine="openpyxl") as writer:
+        # 行业明细
+        for ind in df_all["行业"].unique():
+            df_all[df_all["行业"]==ind].to_excel(writer, sheet_name=ind, index=False)
+        # 汇总
+        df_summary.to_excel(writer, sheet_name="每日汇总统计", index=False)
+        # 连板
+        df_streak.to_excel(writer, sheet_name="连板记录", index=False)
+        # 股东盈亏
+        df_profit.to_excel(writer, sheet_name="A股股东盈亏", index=False)
+        # 行业涨跌排行
+        df_industry.to_excel(writer, sheet_name="行业涨跌排行", index=False)
+    print("✅ 全部数据保存完成！")
+
+# ===================== 主程序 =====================
 if __name__ == "__main__":
-    main()
+    try:
+        today = get_today_date()
+        df_today    = crawl_limit_data()
+        df_today    = deduplicate(df_today)
+        if df_today.empty:
+            time.sleep(2)
+            exit()
+
+        try:
+            df_old = pd.read_excel(SAVE_FILE, sheet_name=0, dtype={"代码": str})
+            df_all = pd.concat([df_old, df_today], ignore_index=True)
+        except:
+            df_all = df_today
+
+        df_summary  = generate_daily_summary(df_today)
+        df_streak   = update_limit_streak(df_today)
+        df_profit   = crawl_profit_data()
+        df_industry = crawl_industry_rank()
+
+        save_all(df_all, df_summary, df_streak, df_profit, df_industry)
+
+    except Exception as e:
+        print(f"❌ 运行出错：{e}")
+    time.sleep(3)
