@@ -31,6 +31,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "行业涨跌停统计_每日追加.xlsx"
-          git commit -m "Update data" || echo "No changes"
+          git add "行业涨跌停统计_每日追加.xlsx" 2>/dev/null || true
+          git diff --quiet || git commit -m "Auto update"
           git push
