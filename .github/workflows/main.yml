@@ -1,36 +1,33 @@
-name: Daily A-Share Data Fetch
+name: Daily Stock Data Crawl
 
 on:
   schedule:
-    - cron: '30 7 * * 1-5'
-  workflow_dispatch:
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    - cron: '0 9 * * 1-5' # 每周一至周五，北京时间 17:00 运行 (UTC 9:00)
+  workflow_dispatch:      # 允许手动点击运行按钮
 
 jobs:
-  fetch:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - name: 检出代码
+        uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.9'
 
-      - name: Install dependencies
-        run: pip install requests beautifulsoup4 pandas openpyxl
-
-      - name: Run crawler
-        run: python fetch_data.py
-
-      - name: Commit and push
+      - name: 安装依赖
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "行业涨跌停统计_每日追加.xlsx" 2>/dev/null || true
-          git diff --quiet || git commit -m "Auto update"
+          pip install -r requirements.txt
+
+      - name: 运行爬虫脚本
+        run: python 你的文件名.py  # 替换成你脚本的名字
+
+      - name: 提交并推送结果到仓库
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add 行业涨跌停统计_每日追加.xlsx
+          git commit -m "自动更新数据: $(date +'%Y-%m-%d')" || exit 0
           git push
