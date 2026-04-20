@@ -1,33 +1,37 @@
-name: Daily Stock Data Crawl
+name: 每日行业数据采集
 
 on:
   schedule:
-    - cron: '0 9 * * 1-5' # 每周一至周五，北京时间 17:00 运行 (UTC 9:00)
-  workflow_dispatch:      # 允许手动点击运行按钮
+    # 这里的 cron 表达式代表定时时间。
+    # 0 9 * * 1-5 代表 UTC 时间 9:00，即北京时间 17:00（下午5点）
+    # 这里的 1-5 表示周一到周五运行
+    - cron: '0 9 * * 1-5'
+  workflow_dispatch: # 这行代码允许你手动在网页上点击“运行”来测试
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出代码
+      - name: 1. 检出代码
         uses: actions/checkout@v3
 
-      - name: 设置 Python 环境
+      - name: 2. 安装 Python 环境
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
-      - name: 安装依赖
+      - name: 3. 安装必要的库
         run: |
           pip install -r requirements.txt
 
-      - name: 运行爬虫脚本
-        run: python 你的文件名.py  # 替换成你脚本的名字
+      - name: 4. 执行爬虫脚本
+        run: python 你的脚本名.py  # 注意：这里请改成你实际的 Python 文件名
 
-      - name: 提交并推送结果到仓库
+      - name: 5. 将生成的 Excel 提交到仓库
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add 行业涨跌停统计_每日追加.xlsx
-          git commit -m "自动更新数据: $(date +'%Y-%m-%d')" || exit 0
+          # 只有当文件有变化时才提交，防止报错
+          git commit -m "自动更新: $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
           git push
