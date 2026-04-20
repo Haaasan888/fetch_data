@@ -4,6 +4,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
+import os
 
 # ===================== 配置项 =====================
 URL_LIMIT        = "https://gg.cfi.cn/data_ndkA0A1934A1935A60.html"
@@ -19,7 +20,7 @@ HEADERS = {
 def get_today_date():
     return datetime.now().strftime("%Y-%m-%d")
 
-# ===================== 爬取行业涨跌停数据（修复版） =====================
+# ===================== 爬取行业涨跌停数据 =====================
 def crawl_limit_data():
     print("正在爬取行业涨跌停数据...")
     try:
@@ -29,7 +30,6 @@ def crawl_limit_data():
         all_data = []
         current_industry = "未知行业"
 
-        # 匹配行业名称
         for block in soup.find_all("div", class_="datagroup"):
             title = block.find("div", class_="datagrouptitle")
             if title:
@@ -38,7 +38,6 @@ def crawl_limit_data():
                 if match:
                     current_industry = match.group(1).strip()
 
-            # 爬表格
             table = block.find("table")
             if not table:
                 continue
@@ -126,25 +125,19 @@ def crawl_profit_data():
     except:
         return pd.DataFrame(columns=["统计日期", "原始日期", "类型", "股东数", "占比"])
 
-# ===================== 去重 =====================
-def deduplicate(df_new):
-    if df_new.empty:
-        return df_new
+# ===================== 去重（只标记，不退出） =====================
+def check_duplicate():
     today = get_today_date()
+    if not os.path.exists(SAVE_FILE):
+        return False
     try:
         df_old = pd.read_excel(SAVE_FILE, sheet_name=0, dtype={"代码": str})
-        if today in df_old["日期"].values:
-            print(f"✅ 今日{today}数据已存在，跳过")
-            return pd.DataFrame()
+        return today in df_old["日期"].values
     except:
-        pass
-    return df_new
+        return False
 
 # ===================== 每日汇总 =====================
 def generate_daily_summary(df_today):
-    if df_today.empty:
-        return pd.DataFrame(columns=["日期", "行业", "涨停数", "跌停数", "合计涨跌停", "涨停环比", "跌停环比"])
-
     today = get_today_date()
     df = df_today.copy()
     df["涨跌幅_数值"] = pd.to_numeric(df["涨跌幅"].astype(str).str.replace("%", ""), errors="coerce")
@@ -164,7 +157,6 @@ def generate_daily_summary(df_today):
 
     df_summary = pd.DataFrame(summary)
 
-    # 环比
     try:
         hist = pd.read_excel(SAVE_FILE, sheet_name="每日汇总统计")
         hist["涨停数"] = pd.to_numeric(hist["涨停数"], errors="coerce")
@@ -210,54 +202,51 @@ def update_limit_streak(df_today):
     streak = streak[streak["连板天数"] >= 2].copy()
     return streak
 
-# ===================== 保存（修复工作表名） =====================
+# ===================== 强制保存文件（必生成） =====================
 def save_all(df_all, df_summary, df_streak, df_profit, df_industry):
     try:
         with pd.ExcelWriter(SAVE_FILE, engine="openpyxl") as writer:
-            # 按行业分表（限制表名长度，防止崩溃）
             if not df_all.empty:
                 for ind in df_all["行业"].unique():
-                    sheet_name = ind[:25]  # 截断超长名称
+                    sheet_name = ind[:25]
                     df_all[df_all["行业"] == ind].to_excel(writer, sheet_name=sheet_name, index=False)
 
-            # 固定表
             df_summary.to_excel(writer, sheet_name="每日汇总统计", index=False)
             df_streak.to_excel(writer, sheet_name="连板记录", index=False)
             df_profit.to_excel(writer, sheet_name="A股股东盈亏", index=False)
             df_industry.to_excel(writer, sheet_name="行业涨跌排行", index=False)
 
-        print("✅ 全部数据保存成功！")
+        print("✅ 文件已保存（必生成，确保 Actions 能找到）")
     except Exception as e:
         print(f"❌ 保存失败：{e}")
 
-# ===================== 主程序 =====================
+# ===================== 主程序（必生成文件，永不空跑） =====================
 if __name__ == "__main__":
     try:
+        today_exists = check_duplicate()
         df_today = crawl_limit_data()
-        df_today = deduplicate(df_today)
-
-        if df_today.empty:
-            print("ℹ️ 无新数据，程序退出")
-            time.sleep(2)
-            exit()
-
-        # 合并历史
-        try:
-            df_old = pd.read_excel(SAVE_FILE, sheet_name=0, dtype={"代码": str})
-            df_all = pd.concat([df_old, df_today], ignore_index=True)
-        except:
-            df_all = df_today
-
-        # 生成数据
-        df_summary = generate_daily_summary(df_today)
-        df_streak = update_limit_streak(df_today)
         df_profit = crawl_profit_data()
         df_industry = crawl_industry_rank()
 
-        # 保存
+        # 合并历史数据
+        try:
+            df_old = pd.read_excel(SAVE_FILE, sheet_name=0, dtype={"代码": str})
+            if not today_exists:
+                df_all = pd.concat([df_old, df_today], ignore_index=True)
+            else:
+                df_all = df_old
+                print(f"ℹ️ 今日{get_today_date()}数据已存在，不追加")
+        except:
+            df_all = df_today
+
+        # 生成统计
+        df_summary = generate_daily_summary(df_all if today_exists else df_today)
+        df_streak = update_limit_streak(df_today if not today_exists else pd.DataFrame())
+
+        # ✅ 关键：无论是否重复，都保存文件！保证文件一定存在
         save_all(df_all, df_summary, df_streak, df_profit, df_industry)
 
     except Exception as e:
         print(f"❌ 程序异常：{e}")
 
-    time.sleep(3)
+    time.sleep(2)
